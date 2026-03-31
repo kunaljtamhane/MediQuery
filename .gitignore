@@ -22,6 +22,8 @@ data/processed/
 *.tfstate
 *.tfstate.backup
 .DS_Store
+.idea/
+*.iml
 # Data collection outputs (IMPORTANT)
 data/collection/output/
 test_data/
