@@ -1,0 +1,51 @@
+# Person B — Embedding Service K8s Deployment (Weeks 3-4)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding
+  labels:
+    app: embedding
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding
+  template:
+    metadata:
+      labels:
+        app: embedding
+    spec:
+      containers:
+        - name: embedding
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/capstone/embedding:latest
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: capstone-config
+            - secretRef:
+                name: capstone-secrets
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-service
+spec:
+  selector:
+    app: embedding
+  ports:
+    - port: 8001
+      targetPort: 8001

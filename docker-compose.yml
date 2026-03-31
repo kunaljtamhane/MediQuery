@@ -1,0 +1,148 @@
+version: "3.9"
+
+services:
+
+  # ── Infrastructure (Person B owns this file) ──────────────────────────────
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Python Services (Person A) ─────────────────────────────────────────────
+
+  embedding:
+    build: ./services/embedding
+    container_name: embedding
+    env_file: .env
+    ports:
+      - "8001:8001"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  rag:
+    build: ./services/rag
+    container_name: rag
+    env_file: .env
+    ports:
+      - "8002:8002"
+    depends_on:
+      embedding:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  reward_model:
+    build: ./services/reward_model
+    container_name: reward_model
+    env_file: .env
+    ports:
+      - "8003:8003"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+
+  agents:
+    build: ./services/agents
+    container_name: agents
+    env_file: .env
+    ports:
+      - "8004:8004"
+    depends_on:
+      rag:
+        condition: service_started
+      reward_model:
+        condition: service_started
+
+  # ── Kafka Consumer (Person C) ──────────────────────────────────────────────
+
+  kafka_consumer:
+    build: ./services/kafka_consumer
+    container_name: kafka_consumer
+    env_file: .env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+
+  # ── Spring Boot API (Person C) ─────────────────────────────────────────────
+
+  spring_boot_api:
+    build: ./services/spring_boot_api
+    container_name: spring_boot_api
+    env_file: .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      agents:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Streamlit Frontend (Person D) ─────────────────────────────────────────
+
+  frontend:
+    build: ./services/frontend
+    container_name: frontend
+    env_file: .env
+    ports:
+      - "8501:8501"
+    depends_on:
+      spring_boot_api:
+        condition: service_healthy
+
+volumes:
+  chroma_data:

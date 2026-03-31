@@ -1,0 +1,59 @@
+# Person B — Spring Boot API K8s Deployment (Weeks 3-4)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-boot-api
+  labels:
+    app: spring-boot-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spring-boot-api
+  template:
+    metadata:
+      labels:
+        app: spring-boot-api
+    spec:
+      containers:
+        - name: spring-boot-api
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/capstone/spring-boot-api:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: capstone-config
+            - secretRef:
+                name: capstone-secrets
+          env:
+            # Override Kafka URL for AWS MSK
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                secretKeyRef:
+                  name: capstone-secrets
+                  key: MSK_BOOTSTRAP_SERVERS
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-boot-service
+spec:
+  type: LoadBalancer   # exposes externally for demo — remove after demo
+  selector:
+    app: spring-boot-api
+  ports:
+    - port: 80
+      targetPort: 8080
