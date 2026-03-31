@@ -22,3 +22,10 @@ data/processed/
 *.tfstate
 *.tfstate.backup
 .DS_Store
+# Data collection outputs (IMPORTANT)
+data/collection/output/
+test_data/
+
+# Large generated files
+*.pdf
+*.jsonl
