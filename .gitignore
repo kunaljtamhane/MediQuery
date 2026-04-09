@@ -32,3 +32,4 @@ test_data/
 *.pdf
 *.jsonl
 !data/annotation/processed/*.jsonl
+!data/annotation/triples.jsonl
