@@ -36,9 +36,10 @@ files = {
     "inaccurate_machine": open(output_dir / "inaccurate_machine_answers.jsonl", "w"),
     "contradicting_evidence": open(output_dir / "contradicting_evidence.jsonl", "w"),
     "neutral_evidence": open(output_dir / "neutral_evidence.jsonl", "w"),
+    "joint_accurate": open(output_dir / "joint_accurate_answers.jsonl", "w"),
 }
 
-print("Processing medaesqa_v1.json and performing deep cleaning of brackets...")
+print("Processing medaesqa_v1.json and generating joint accurate file...")
 
 try:
     with open(source_file, "r") as f:
@@ -49,26 +50,38 @@ try:
 
         # 1. Expert Answers
         if entry.get("expert_curated_answer"):
-            files["expert"].write(json.dumps({
+            cleaned_expert = remove_citations(entry["expert_curated_answer"])
+            expert_obj = {
                 "question": question,
-                "answer": remove_citations(entry["expert_curated_answer"])
-            }) + "\n")
+                "answer": cleaned_expert,
+                "source": "expert"
+            }
+            files["expert"].write(json.dumps(expert_obj) + "\n")
+            files["joint_accurate"].write(json.dumps(expert_obj) + "\n")
 
         # 2 & 3. Machine Answers (Accurate vs Inaccurate)
         machine_answers = entry.get("machine_generated_answers", {})
         for m_id, m_data in machine_answers.items():
             out_key = None
+            is_accurate = False
             if m_data.get("is_answer_accurate") == "yes":
                 out_key = "accurate_machine"
+                is_accurate = True
             elif m_data.get("is_answer_accurate") == "no":
                 out_key = "inaccurate_machine"
             
             if out_key:
-                files[out_key].write(json.dumps({
+                cleaned_answer = remove_citations(m_data.get("answer", ""))
+                machine_obj = {
                     "question": question,
                     "machine_id": m_id,
-                    "answer": remove_citations(m_data.get("answer", ""))
-                }) + "\n")
+                    "answer": cleaned_answer,
+                    "source": "machine"
+                }
+                files[out_key].write(json.dumps(machine_obj) + "\n")
+                
+                if is_accurate:
+                    files["joint_accurate"].write(json.dumps(machine_obj) + "\n")
 
             # 4 & 5. Evidence Support (Contradicting vs Neutral)
             for sentence in m_data.get("answer_sentences", []):
@@ -92,7 +105,7 @@ try:
                             "evidence": cleaned_evidence
                         }) + "\n")
 
-    print(f"Done! Deep-cleaned files created in: {output_dir}")
+    print(f"Done! All files (including joint_accurate_answers.jsonl) created in: {output_dir}")
 
 finally:
     for f in files.values():
