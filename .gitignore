@@ -31,3 +31,4 @@ test_data/
 # Large generated files
 *.pdf
 *.jsonl
+!data/annotation/processed/*.jsonl
