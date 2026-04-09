@@ -12,7 +12,8 @@ node_modules/
 target/
 *.class
 *.jar
-data/raw/
+data/raw/*
+!data/raw/.gitkeep
 data/processed/
 *.ckpt
 *.bin

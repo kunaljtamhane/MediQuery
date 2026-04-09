@@ -102,6 +102,8 @@ with col_sources:
             doc_id = src.get("doc_id", "unknown")
             title = src.get("title") or doc_id
             score = src.get("score", 0)
+            source_name = (src.get("source") or "unknown").title()
+            source_url = src.get("url")
 
             is_new = doc_id not in st.session_state.seen_sources
             st.session_state.seen_sources.add(doc_id)
@@ -109,10 +111,14 @@ with col_sources:
             badge = "NEW" if is_new else "seen"
             color = "green" if is_new else "gray"
 
-            st.markdown(
-                f":{color}[**{badge}**] **{title[:60]}**  \n"
-                f"Score: `{score:.3f}` | ID: `{doc_id[:20]}...`"
-            )
+            lines = [
+                f":{color}[**{badge}**] **{title[:60]}**  ",
+                f"Source: `{source_name}` | Score: `{score:.3f}` | ID: `{doc_id[:20]}...`",
+            ]
+            if source_url:
+                lines.append(f"[Open paper]({source_url})")
+
+            st.markdown("\n".join(lines))
             st.divider()
     else:
         st.info("Sources will appear here after your first query.")

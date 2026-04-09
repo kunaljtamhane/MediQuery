@@ -24,7 +24,7 @@ By leveraging Docling, Pinecone, and LangGraph, the system supports retrieval-au
 
 - **Multi-Agent Research System**
   - RAG Agent for document-specific question answering  
-  - Arxiv Agent for retrieving academic research  
+  - Research Agent for retrieving live academic research from arXiv and PubMed  
   - Web Search Agent for broader contextual information  
 
 - **Intelligent Querying**
@@ -75,7 +75,7 @@ Documents are parsed using Docling, converted into embeddings, and stored in Pin
 ### 2. Multi-Agent Research
 Users select documents and interact with multiple agents:
 - RAG Agent provides document-grounded answers  
-- Arxiv Agent retrieves academic insights  
+ - Research Agent retrieves live academic insights from arXiv and PubMed  
 - Web Search Agent supplements with external information  
 
 ### 3. User Interaction
