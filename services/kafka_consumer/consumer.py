@@ -25,6 +25,16 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 512))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 64))
 
 
+def _safe_deserialize(v):
+    if v is None:
+        return None
+    try:
+        return json.loads(v.decode("utf-8"), strict=False)
+    except json.JSONDecodeError as e:
+        log.error(f"Skipping unparseable message due to JSON error: {e}")
+        return None
+
+
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """
     Naive word-boundary chunking with overlap.
@@ -85,7 +95,7 @@ def run():
                 bootstrap_servers=KAFKA_BOOTSTRAP,
                 group_id="ingestion-pipeline",
                 auto_offset_reset="earliest",
-                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+                value_deserializer=lambda v: _safe_deserialize(v),
                 enable_auto_commit=True,
             )
             log.info("Kafka consumer connected")
@@ -99,6 +109,9 @@ def run():
 
     log.info("Listening for documents...")
     for message in consumer:
+        if message.value is None:
+            log.warning(f"Skipping bad message at partition={message.partition} offset={message.offset}")
+            continue
         try:
             doc = message.value
             log.info(f"Received doc_id={doc.get('doc_id')} from partition={message.partition} offset={message.offset}")

@@ -53,7 +53,12 @@ public class IngestController {
         }
 
         private String escape(String s) {
-            return s == null ? "" : s.replace("\"", "\\\"").replace("\n", "\\n");
+            if (s == null) return "";
+            return s.replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t");
         }
     }
 }

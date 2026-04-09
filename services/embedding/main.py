@@ -1,13 +1,15 @@
 """
 Person A — Embedding Service (Weeks 1-2)
 FastAPI service that converts text chunks into vector embeddings
-and stores/retrieves them from ChromaDB.
+and stores/retrieves them from Qdrant.
 """
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
-import chromadb
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
 import os
+import time
 import logging
 
 logging.basicConfig(level=logging.INFO, format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}')
@@ -22,14 +24,34 @@ app = FastAPI(title="Embedding Service")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 model = SentenceTransformer(MODEL_NAME)
 
-chroma_client = chromadb.HttpClient(
-    host=os.getenv("CHROMA_HOST", "localhost"),
-    port=int(os.getenv("CHROMA_PORT", 8000)),
-)
-collection = chroma_client.get_or_create_collection(
-    name="papers",
-    metadata={"hnsw:space": "cosine"},
-)
+COLLECTION_NAME = "papers"
+VECTOR_DIM = 384  # matches all-MiniLM-L6-v2; update if you change the model
+
+
+def connect_qdrant(retries=10, delay=5):
+    host = os.getenv("CHROMA_HOST", "chromadb")
+    port = int(os.getenv("CHROMA_PORT", 6333))
+    for attempt in range(1, retries + 1):
+        try:
+            client = QdrantClient(host=host, port=port)
+            # Create collection if it doesn't exist
+            existing = [c.name for c in client.get_collections().collections]
+            if COLLECTION_NAME not in existing:
+                client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+                )
+                log.info(f"Created Qdrant collection '{COLLECTION_NAME}'")
+            log.info("Connected to Qdrant")
+            return client
+        except Exception as e:
+            log.warning(f"Qdrant not ready (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise RuntimeError("Could not connect to Qdrant after multiple attempts")
+
+
+qdrant = connect_qdrant()
 
 log.info(f"Embedding service started with model={MODEL_NAME}")
 
@@ -79,13 +101,15 @@ def embed(req: EmbedRequest):
 
 @app.post("/index")
 def index_document(req: IndexRequest):
-    """Embed a text chunk and store it in ChromaDB."""
+    """Embed a text chunk and store it in Qdrant."""
     vec = model.encode(req.text).tolist()
-    collection.upsert(
-        ids=[req.doc_id],
-        embeddings=[vec],
-        documents=[req.text],
-        metadatas=[req.metadata],
+    qdrant.upsert(
+        collection_name=COLLECTION_NAME,
+        points=[PointStruct(
+            id=abs(hash(req.doc_id)) % (2**63),
+            vector=vec,
+            payload={"doc_id": req.doc_id, "text": req.text, **req.metadata},
+        )],
     )
     log.info(f"Indexed doc_id={req.doc_id}")
     return {"status": "indexed", "doc_id": req.doc_id}
@@ -95,17 +119,18 @@ def index_document(req: IndexRequest):
 def query(req: QueryRequest):
     """Find the top-N most similar chunks to a query."""
     vec = model.encode(req.text).tolist()
-    results = collection.query(
-        query_embeddings=[vec],
-        n_results=req.n_results,
-        include=["documents", "metadatas", "distances"],
+    results = qdrant.search(
+        collection_name=COLLECTION_NAME,
+        query_vector=vec,
+        limit=req.n_results,
+        with_payload=True,
     )
-    output = []
-    for i in range(len(results["ids"][0])):
-        output.append(QueryResult(
-            doc_id=results["ids"][0][i],
-            text=results["documents"][0][i],
-            score=1 - results["distances"][0][i],  # cosine distance → similarity
-            metadata=results["metadatas"][0][i],
-        ))
-    return output
+    return [
+        QueryResult(
+            doc_id=hit.payload.get("doc_id", str(hit.id)),
+            text=hit.payload.get("text", ""),
+            score=hit.score,
+            metadata={k: v for k, v in hit.payload.items() if k not in ("doc_id", "text")},
+        )
+        for hit in results
+    ]
