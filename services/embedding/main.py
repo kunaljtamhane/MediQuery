@@ -29,7 +29,7 @@ VECTOR_DIM = 384  # matches all-MiniLM-L6-v2; update if you change the model
 
 
 def connect_qdrant(retries=10, delay=5):
-    host = os.getenv("CHROMA_HOST", "chromadb")
+    host = os.getenv("CHROMA_HOST", "qdrant")
     port = int(os.getenv("CHROMA_PORT", 6333))
     for attempt in range(1, retries + 1):
         try:

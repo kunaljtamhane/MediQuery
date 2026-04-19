@@ -9,7 +9,7 @@ from rank_bm25 import BM25Okapi
 import chromadb
 
 EMBEDDING_SERVICE_URL = os.getenv("EMBEDDING_SERVICE_URL", "http://embedding:8001")
-CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
+CHROMA_HOST = os.getenv("CHROMA_HOST", "qdrant")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", 8000))
 
 chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
