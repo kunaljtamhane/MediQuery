@@ -24,6 +24,8 @@ from typing import Iterable, List
 import requests
 from tqdm import tqdm
 
+from env_loader import load_env_file
+
 
 NCBI_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 DEFAULT_QUERY = (
@@ -114,6 +116,7 @@ class PubMedCollector:
         page_size: int = 200,
         fetch_batch_size: int = 100,
     ) -> None:
+        load_env_file(Path(__file__).resolve().parents[2] / ".env")
         self.output_path = output_path
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.query = query
@@ -125,7 +128,7 @@ class PubMedCollector:
         self.session = requests.Session()
         self.email = os.getenv("NCBI_EMAIL", "")
         self.api_key = os.getenv("NCBI_API_KEY", "")
-        self.tool_name = "capstone-pubmed-collector"
+        self.tool_name = os.getenv("NCBI_TOOL", "capstone-pubmed-collector")
         self.delay_seconds = 0.11 if self.api_key else 0.34
 
     def _request(self, endpoint: str, params: dict, timeout: int = 60) -> requests.Response:

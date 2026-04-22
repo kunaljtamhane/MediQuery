@@ -5,3 +5,4 @@ tqdm==4.66.1
 requests==2.31.0
 datasets>=2.18.0
 sentence-transformers>=2.6.0
+playwright>=1.52.0
