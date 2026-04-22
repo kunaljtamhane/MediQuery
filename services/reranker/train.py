@@ -1,6 +1,9 @@
 """
-Person A — Reward Model Training (Weeks 5-6)
-Fine-tunes ms-marco-MiniLM cross-encoder on labeled (query, passage, label) triples.
+Reranker Training — Cross-Encoder Fine-Tuning (Weeks 5-6)
+Fine-tunes ms-marco-MiniLM cross-encoder on MedAESQA (query, positive, negative) triples
+to serve as the passage reranker in the Medical Papers Agent retrieval pipeline.
+
+This is NOT the fine-tuning of LLaMA-3. See services/fine_tuning/train.py for that.
 
 Usage:
     python train.py --data_path ../../data/annotation/triples.jsonl --output_dir ./model
@@ -11,7 +14,6 @@ import logging
 from pathlib import Path
 
 from sentence_transformers import CrossEncoder
-from sentence_transformers.cross_encoder.evaluation import CERerankingEvaluator
 from torch.utils.data import Dataset
 import torch
 
@@ -29,7 +31,6 @@ class TriplesDataset(Dataset):
         with open(path) as f:
             for line in f:
                 row = json.loads(line)
-                # Positive pair (label=1) and negative pair (label=0)
                 self.samples.append({"texts": [row["query"], row["positive"]], "label": 1})
                 self.samples.append({"texts": [row["query"], row["negative"]], "label": 0})
 
@@ -43,13 +44,11 @@ class TriplesDataset(Dataset):
 def train(data_path: str, output_dir: str, epochs: int = 3, batch_size: int = 16):
     log.info(f"Loading triples from {data_path}")
     dataset = TriplesDataset(data_path)
-    log.info(f"Training on {len(dataset)} pairs ({len(dataset)//2} triples)")
+    log.info(f"Training reranker on {len(dataset)} pairs ({len(dataset) // 2} triples)")
 
-    # TODO Week 5: Start with this checkpoint — it was pre-trained on MS MARCO
     model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", num_labels=1)
 
-    # Split 80/20 for train/eval
-    split = int(len(dataset) * 0.8)
+    split = int(len(dataset) * 0.85)
     train_samples = dataset.samples[:split]
     eval_samples = dataset.samples[split:]
 
@@ -61,7 +60,7 @@ def train(data_path: str, output_dir: str, epochs: int = 3, batch_size: int = 16
         show_progress_bar=True,
     )
 
-    log.info(f"Model saved to {output_dir}")
+    log.info(f"Reranker model saved to {output_dir}")
     return model
 
 

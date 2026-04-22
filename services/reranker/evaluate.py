@@ -1,6 +1,6 @@
 """
-Person A — Reward Model Evaluation (Weeks 5-6)
-Measures NDCG@5, Precision@5, MRR on a held-out benchmark.
+Reranker Evaluation (Weeks 5-6)
+Measures NDCG@5, Precision@5, MRR of the cross-encoder reranker on a held-out benchmark.
 
 Usage:
     python evaluate.py --model_dir ./model --benchmark_path ../../data/annotation/benchmark.jsonl
@@ -44,7 +44,6 @@ def evaluate(model_dir: str, benchmark_path: str):
     Labels: 0=irrelevant, 1=partially relevant, 2=highly relevant
     """
     model = CrossEncoder(model_dir)
-
     ndcg_scores, p5_scores, mrr_scores = [], [], []
 
     with open(benchmark_path) as f:
@@ -53,11 +52,9 @@ def evaluate(model_dir: str, benchmark_path: str):
             query = item["query"]
             candidates = item["candidates"]
 
-            # Score all candidates
             pairs = [[query, c["text"]] for c in candidates]
             scores = model.predict(pairs)
 
-            # Sort by model score
             ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
             relevances = [c["label"] for _, c in ranked]
 
@@ -71,7 +68,7 @@ def evaluate(model_dir: str, benchmark_path: str):
         "MRR": round(np.mean(mrr_scores), 4),
         "num_queries": len(ndcg_scores),
     }
-    log.info(f"Results: {results}")
+    log.info(f"Reranker results: {results}")
     return results
 
 
