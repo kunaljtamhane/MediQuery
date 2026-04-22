@@ -9,6 +9,7 @@ and medRxiv, semantically ranks the candidate pool, and exports JSONL only.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -20,6 +21,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 import requests
 
+from env_loader import load_env_file
 from medrxiv_scraper import MedRxivCollector
 from pubmed_scraper import PubMedCollector
 from recent_arxiv_scraper import DEFAULT_ARXIV_QUERY, RecentArxivCollector
@@ -681,18 +683,24 @@ def fetch_medrxiv_candidates_via_scraper(
 
 class PubMedSemanticCollector:
     def __init__(self, session: requests.Session, start_date: str, end_date: str, email: str | None = None) -> None:
+        load_env_file(Path(__file__).resolve().parents[2] / ".env")
         self.session = session
         self.start_date = start_date
         self.end_date = end_date
-        self.email = email or ""
+        self.email = email or os.getenv("NCBI_EMAIL", "")
+        self.api_key = os.getenv("NCBI_API_KEY", "")
+        self.tool_name = os.getenv("NCBI_TOOL", "capstone-semantic-collector")
+        self.delay_seconds = 0.11 if self.api_key else 0.34
 
     def _request(self, endpoint: str, params: Dict[str, Any], timeout: int = 90) -> requests.Response:
-        payload = {"tool": "capstone-semantic-collector", **params}
+        payload = {"tool": self.tool_name, **params}
         if self.email:
             payload["email"] = self.email
+        if self.api_key:
+            payload["api_key"] = self.api_key
         response = self.session.get(f"{NCBI_BASE_URL}/{endpoint}", params=payload, timeout=timeout)
         response.raise_for_status()
-        time.sleep(0.34)
+        time.sleep(self.delay_seconds)
         return response
 
     def _search_ids(self, query: str, retmax: int = 50) -> List[str]:
