@@ -9,7 +9,7 @@ metadata:
   namespace: default
 data:
   KAFKA_TOPIC_DOCUMENTS: "documents"
-  CHROMA_HOST: "chromadb-service"
+  CHROMA_HOST: "qdrant-service"
   CHROMA_PORT: "8000"
   REDIS_HOST: "redis-service"
   REDIS_PORT: "6379"
