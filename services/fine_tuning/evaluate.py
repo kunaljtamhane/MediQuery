@@ -169,22 +169,40 @@ def baseline_answer(query: str, client: OpenAI) -> str:
 
 # ── LLM-as-a-Judge ────────────────────────────────────────────────────────────
 
-JUDGE_PROMPT = """You are evaluating a medical QA system answer against a ground-truth reference.
+JUDGE_PROMPT = """You are evaluating a medical QA system answer.
 
 Question: {question}
-Ground Truth: {ground_truth}
+
+Source Passages (from PubMedQA):
+{source_passages}
+
+Ground Truth Answer: {ground_truth}
 System Answer: {answer}
 
 Score the system answer on three dimensions. Reply in valid JSON only, no extra text.
 
 {{
-  "accuracy": <1-5>,        // 5 = fully correct, 1 = completely wrong
-  "hallucination": <0 or 1>,// 1 = contains claims not supported by ground truth
-  "grounding": <1-5>        // 5 = every claim traceable to evidence, 1 = pure speculation
+  "accuracy": <1-5>,         // 5 = fully correct vs ground truth, 1 = completely wrong
+  "hallucination": <0 or 1>, // 1 = contains claims NOT supported by any source passage
+  "grounding": <1-5>         // 5 = every claim traceable to a source passage, 1 = pure speculation
 }}"""
 
 
-def llm_judge(question: str, ground_truth: str, answer: str, client: OpenAI) -> dict:
+def llm_judge(
+    question: str,
+    ground_truth: str,
+    answer: str,
+    client: OpenAI,
+    context: dict = None,
+) -> dict:
+    # Build source passages string from PubMedQA context if available
+    source_passages = "Not provided."
+    if context and context.get("contexts"):
+        passages = context["contexts"]
+        source_passages = "\n".join(
+            f"[{i+1}] {p[:300]}..." for i, p in enumerate(passages[:5])
+        )
+
     try:
         resp = client.chat.completions.create(
             model=JUDGE_MODEL,
@@ -193,6 +211,7 @@ def llm_judge(question: str, ground_truth: str, answer: str, client: OpenAI) -> 
                     "role": "user",
                     "content": JUDGE_PROMPT.format(
                         question=question,
+                        source_passages=source_passages,
                         ground_truth=ground_truth,
                         answer=answer,
                     ),
@@ -209,23 +228,43 @@ def llm_judge(question: str, ground_truth: str, answer: str, client: OpenAI) -> 
 
 # ── Dataset loading ───────────────────────────────────────────────────────────
 
-def load_pubmedqa(num_samples: int) -> list[dict]:
+def load_pubmedqa(num_samples: int, local_path: str = None) -> list[dict]:
     """
-    Load PubMedQA labeled split filtered to final_decision = 'yes'.
-    Returns list of {question, long_answer, final_decision}.
+    Load PubMedQA pqa_labeled split.
+    Prefers the local JSONL file at data/pqa_labeled.jsonl (downloaded once).
+    Falls back to HuggingFace (qiaojin/PubMedQA) if local file is absent.
+
+    Filters to final_decision = 'yes' (552 of 1,000 expert-labeled pairs).
+    Fields: pubid, question, context (passages + labels), long_answer, final_decision.
+
+    Source: https://huggingface.co/datasets/qiaojin/PubMedQA
+    Paper:  https://github.com/pubmedqa/pubmedqa
     """
-    log.info("Loading PubMedQA labeled split...")
-    ds = load_dataset("pubmed_qa", "pqa_labeled", split="train", trust_remote_code=True)
+    default_local = Path(__file__).resolve().parents[2] / "data" / "pqa_labeled.jsonl"
+    path = Path(local_path) if local_path else default_local
+
+    if path.exists():
+        log.info(f"Loading PubMedQA from local file: {path}")
+        records = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                records.append(json.loads(line.strip()))
+    else:
+        log.info("Local pqa_labeled.jsonl not found — downloading from HuggingFace...")
+        ds = load_dataset("qiaojin/PubMedQA", "pqa_labeled", split="train")
+        records = list(ds)
+
     filtered = [
         {
             "question": row["question"],
             "long_answer": row["long_answer"],
             "final_decision": row["final_decision"],
+            "context": row.get("context", {}),
         }
-        for row in ds
+        for row in records
         if row["final_decision"] == "yes"
     ]
-    log.info(f"PubMedQA filtered to {len(filtered)} 'yes' samples. Using {num_samples}.")
+    log.info(f"PubMedQA: {len(filtered)} 'yes' samples available. Using {num_samples}.")
     return filtered[:num_samples]
 
 
@@ -359,6 +398,8 @@ if __name__ == "__main__":
                         help="Base model ID (same as used in train.py)")
     parser.add_argument("--num_samples", type=int, default=100,
                         help="Number of PubMedQA 'yes' samples to evaluate")
+    parser.add_argument("--data_path", default=None,
+                        help="Path to local pqa_labeled.jsonl (default: data/pqa_labeled.jsonl)")
     parser.add_argument("--output_path", default="./eval_results.json",
                         help="Path to write JSON results")
     parser.add_argument("--baseline_only", action="store_true",
