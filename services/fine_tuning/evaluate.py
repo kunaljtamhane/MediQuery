@@ -44,8 +44,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from datasets import load_dataset
+from dotenv import load_dotenv
 from openai import OpenAI
 from rouge_score import rouge_scorer
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)

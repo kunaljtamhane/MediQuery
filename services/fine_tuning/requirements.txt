@@ -7,3 +7,4 @@ rouge-score>=0.1.2
 transformers>=4.40
 peft>=0.10
 accelerate>=0.29
+python-dotenv>=1.0
