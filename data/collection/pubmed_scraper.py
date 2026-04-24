@@ -24,7 +24,7 @@ from typing import Iterable, List
 import requests
 from tqdm import tqdm
 
-from env_loader import load_env_file
+from env_loader import configure_requests_session, load_env_file
 
 
 NCBI_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -125,7 +125,7 @@ class PubMedCollector:
         self.end_date = end_date
         self.page_size = page_size
         self.fetch_batch_size = fetch_batch_size
-        self.session = requests.Session()
+        self.session = configure_requests_session(requests.Session())
         self.email = os.getenv("NCBI_EMAIL", "")
         self.api_key = os.getenv("NCBI_API_KEY", "")
         self.tool_name = os.getenv("NCBI_TOOL", "capstone-pubmed-collector")

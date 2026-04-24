@@ -21,7 +21,9 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 import requests
 
-from env_loader import load_env_file
+from collection_utils import utc_now_iso
+from env_loader import env_flag, load_env_file
+from medrxiv_content import fetch_jats_full_text, get_jats_xml_path
 from medrxiv_scraper import MedRxivCollector
 from pubmed_scraper import PubMedCollector
 from recent_arxiv_scraper import DEFAULT_ARXIV_QUERY, RecentArxivCollector
@@ -69,6 +71,7 @@ JSONL_FIELDS = [
     "medrxiv_id",
     "version",
     "license",
+    "jats_xml_path",
     "comment",
     "keywords",
     "mesh_terms",
@@ -158,10 +161,6 @@ BIOMEDICAL_QUERY_ANCHORS = (
     "imaging",
     "hospital",
 )
-
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def normalize_text(value: Any) -> str:
@@ -254,7 +253,10 @@ class SemanticRanker:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self.model = SentenceTransformer(model_name)
+            self.model = SentenceTransformer(
+                model_name,
+                local_files_only=not env_flag("SEMANTIC_RANKER_ALLOW_DOWNLOAD", False),
+            )
             self.backend = "sentence-transformers"
         except Exception:
             self.model = None
@@ -479,41 +481,44 @@ def adapt_arxiv_record(record: Any) -> Dict[str, Any]:
 
 def adapt_medrxiv_record(record: Any) -> Dict[str, Any]:
     payload = asdict(record)
-    return _null_out_pdf_fields(
-        make_record(
-            source=payload.get("source"),
-            source_id=payload.get("source_id"),
-            title=payload.get("title"),
-            abstract=payload.get("abstract"),
-            summary=payload.get("abstract"),
-            authors=payload.get("authors"),
-            author_string=", ".join(payload.get("authors") or []) or None,
-            published_date=payload.get("published_date"),
-            updated_date=payload.get("updated_date"),
-            categories=payload.get("categories"),
-            primary_category=payload.get("primary_category"),
-            domain=payload.get("domain", "medical"),
-            doc_id=f"medrxiv:{payload.get('source_id')}",
-            text=payload.get("abstract") or payload.get("title"),
-            url=payload.get("source_url"),
-            source_url=payload.get("source_url"),
-            journal_ref=payload.get("journal_ref"),
-            journal=payload.get("published_journal_ref"),
-            publisher="medRxiv",
-            doi=payload.get("doi"),
-            medrxiv_id=payload.get("medrxiv_id"),
-            version=payload.get("version"),
-            license=payload.get("license"),
-            comment=payload.get("comment"),
-            keywords=None,
-            mesh_terms=None,
-            publication_types=None,
-            is_peer_reviewed=False,
-            preprint_server="medrxiv",
-            retrieval_query=None,
-            collected_at=payload.get("collected_at"),
-            raw_payload=payload,
-        )
+    return make_record(
+        source=payload.get("source"),
+        source_id=payload.get("source_id"),
+        title=payload.get("title"),
+        abstract=payload.get("abstract"),
+        summary=payload.get("abstract"),
+        authors=payload.get("authors"),
+        author_string=", ".join(payload.get("authors") or []) or None,
+        published_date=payload.get("published_date"),
+        updated_date=payload.get("updated_date"),
+        categories=payload.get("categories"),
+        primary_category=payload.get("primary_category"),
+        domain=payload.get("domain", "medical"),
+        doc_id=f"medrxiv:{payload.get('source_id')}",
+        text=payload.get("full_text") or payload.get("abstract") or payload.get("title"),
+        url=payload.get("source_url"),
+        source_url=payload.get("source_url"),
+        journal_ref=payload.get("journal_ref"),
+        journal=payload.get("published_journal_ref"),
+        publisher="medRxiv",
+        doi=payload.get("doi"),
+        medrxiv_id=payload.get("medrxiv_id"),
+        version=payload.get("version"),
+        license=payload.get("license"),
+        jats_xml_path=payload.get("jats_xml_path"),
+        comment=payload.get("comment"),
+        keywords=None,
+        mesh_terms=None,
+        publication_types=None,
+        is_peer_reviewed=False,
+        preprint_server="medrxiv",
+        retrieval_query=None,
+        collected_at=payload.get("collected_at"),
+        pdf_url=payload.get("pdf_url"),
+        full_text_extracted=bool(payload.get("full_text")),
+        full_text=payload.get("full_text"),
+        text_extraction_date=payload.get("text_extraction_date"),
+        raw_payload=payload,
     )
 
 
@@ -1052,6 +1057,16 @@ class MedrxivSemanticCollector:
         version = normalize_text(item.get("version")) or None
         version_suffix = f"v{version}" if version else ""
         landing_page = f"https://www.medrxiv.org/content/{doi}{version_suffix}" if doi else None
+        pdf_url = f"{landing_page}.full.pdf" if landing_page else None
+        jats_xml_path = get_jats_xml_path(item)
+        full_text, resolved_jats_url, jats_error = fetch_jats_full_text(
+            self.session,
+            jats_xml_path,
+            timeout=60,
+        )
+        raw_payload = dict(item)
+        if jats_error and jats_xml_path:
+            raw_payload["jats_fetch_error"] = jats_error
         authors_text = normalize_text(item.get("authors"))
         authors = [author.strip() for author in re.split(r"[;,]", authors_text) if author.strip()]
 
@@ -1069,7 +1084,7 @@ class MedrxivSemanticCollector:
             primary_category=category,
             domain="medical",
             doc_id=f"medrxiv:{doi or title}",
-            text=abstract or title,
+            text=full_text or abstract or title,
             url=landing_page,
             source_url=landing_page,
             journal_ref=normalize_text(item.get("published")) or None,
@@ -1079,6 +1094,7 @@ class MedrxivSemanticCollector:
             medrxiv_id=doi or None,
             version=version,
             license=normalize_text(item.get("license")) or None,
+            jats_xml_path=resolved_jats_url or jats_xml_path,
             comment=normalize_text(item.get("type")) or None,
             keywords=None,
             mesh_terms=None,
@@ -1087,11 +1103,11 @@ class MedrxivSemanticCollector:
             preprint_server="medrxiv",
             retrieval_query="pubmedqa-semantic-medrxiv",
             collected_at=collected_at,
-            pdf_url=None,
-            full_text_extracted=False,
-            full_text=None,
-            text_extraction_date=None,
-            raw_payload=item,
+            pdf_url=pdf_url,
+            full_text_extracted=bool(full_text),
+            full_text=full_text,
+            text_extraction_date=collected_at if full_text else None,
+            raw_payload=raw_payload,
         )
 
     def _collect_window(

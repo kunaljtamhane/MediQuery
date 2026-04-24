@@ -22,6 +22,9 @@ from typing import List
 import requests
 from tqdm import tqdm
 
+from env_loader import configure_requests_session, load_env_file
+from medrxiv_content import fetch_jats_full_text, get_jats_xml_path
+
 
 MEDRXIV_API_BASE = "https://api.medrxiv.org/details/medrxiv"
 
@@ -85,13 +88,14 @@ class MedRxivCollector:
         end_date: str,
         keywords: List[str] | None = None,
     ) -> None:
+        load_env_file(Path(__file__).resolve().parents[2] / ".env")
         self.output_path = output_path
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.max_results = max_results
         self.start_date = start_date
         self.end_date = end_date
         self.keywords = [keyword.lower() for keyword in (keywords or []) if keyword.strip()]
-        self.session = requests.Session()
+        self.session = configure_requests_session(requests.Session())
 
     def _load_existing_ids(self) -> set[str]:
         existing_ids: set[str] = set()
@@ -154,13 +158,21 @@ class MedRxivCollector:
         category = clean_text(item.get("category")) or "medical"
         license_name = clean_text(item.get("license")) or None
         published_ref = clean_text(item.get("published")) or None
+        jats_xml_path = get_jats_xml_path(item)
 
         if not doi or not title or not abstract:
             return None
 
         landing_page = f"https://www.medrxiv.org/content/{doi}v{version}" if version else f"https://www.medrxiv.org/content/{doi}"
         pdf_url = f"{landing_page}.full.pdf"
+        full_text, resolved_jats_url, text_error = fetch_jats_full_text(
+            self.session,
+            jats_xml_path,
+            timeout=60,
+        )
         comment_parts = [clean_text(item.get("type")) or None, f"license={license_name}" if license_name else None]
+        if text_error and jats_xml_path:
+            comment_parts.append(f"jats_error={text_error}")
         comment = ", ".join(part for part in comment_parts if part) or None
         published_date = to_iso8601(clean_text(item.get("date"))) or collected_at
 
@@ -180,10 +192,13 @@ class MedRxivCollector:
             journal_ref=published_ref,
             doi=doi,
             collected_at=collected_at,
+            full_text_extracted=bool(full_text),
+            full_text=full_text,
+            text_extraction_date=collected_at if full_text else None,
             source_url=landing_page,
             version=version,
             license=license_name,
-            jats_xml_path=clean_text(item.get("jats xml path")) or None,
+            jats_xml_path=resolved_jats_url or jats_xml_path,
             published_journal_ref=published_ref,
         )
 
