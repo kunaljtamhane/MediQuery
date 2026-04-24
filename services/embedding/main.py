@@ -1,40 +1,45 @@
 """
-Person A — Embedding Service (Weeks 1-2)
-FastAPI service that converts text chunks into vector embeddings
-and stores/retrieves them from Qdrant.
+Person A — Embedding Service
+FastAPI service that converts text chunks into dense vector embeddings using
+BioMedBERT and stores/retrieves them from QdrantDB.
+
+BioMedBERT is the designated encoder for MediQuery:
+  - Generates 768-dim dense embeddings for QdrantDB retrieval
+  - Used by the knowledge graph pipeline for NER signals via SciSpaCy
+  - Base weights are frozen; it is never fine-tuned
 """
+import os
+import time
+import logging
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-import os
-import time
-import logging
 
-logging.basicConfig(level=logging.INFO, format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}')
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
+)
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="Embedding Service")
 
-# TODO Week 1: Try these three models and pick the best one for your corpus:
-#   - "all-MiniLM-L6-v2"       (fast, 384-dim, good baseline)
-#   - "all-mpnet-base-v2"       (slower, 768-dim, better quality)
-#   - "BAAI/bge-small-en-v1.5"  (strong for retrieval tasks)
-MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+# BioMedBERT is the designated encoder — 768-dim, frozen, medical domain
+MODEL_NAME = os.getenv("EMBEDDING_MODEL", "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract")
 model = SentenceTransformer(MODEL_NAME)
 
 COLLECTION_NAME = "papers"
-VECTOR_DIM = 384  # matches all-MiniLM-L6-v2; update if you change the model
+VECTOR_DIM = 768  # BioMedBERT output dimension
 
 
-def connect_qdrant(retries=10, delay=5):
-    host = os.getenv("CHROMA_HOST", "qdrant")
-    port = int(os.getenv("CHROMA_PORT", 6333))
+def connect_qdrant(retries: int = 10, delay: int = 5) -> QdrantClient:
+    host = os.getenv("QDRANT_HOST", "qdrant")
+    port = int(os.getenv("QDRANT_PORT", 6333))
     for attempt in range(1, retries + 1):
         try:
             client = QdrantClient(host=host, port=port)
-            # Create collection if it doesn't exist
             existing = [c.name for c in client.get_collections().collections]
             if COLLECTION_NAME not in existing:
                 client.create_collection(
@@ -42,7 +47,7 @@ def connect_qdrant(retries=10, delay=5):
                     vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
                 )
                 log.info(f"Created Qdrant collection '{COLLECTION_NAME}'")
-            log.info("Connected to Qdrant")
+            log.info(f"Connected to Qdrant at {host}:{port}")
             return client
         except Exception as e:
             log.warning(f"Qdrant not ready (attempt {attempt}/{retries}): {e}")
@@ -53,7 +58,7 @@ def connect_qdrant(retries=10, delay=5):
 
 qdrant = connect_qdrant()
 
-log.info(f"Embedding service started with model={MODEL_NAME}")
+log.info(f"Embedding service started — model={MODEL_NAME} dim={VECTOR_DIM}")
 
 
 # ── Request/Response Schemas ──────────────────────────────────────────────────
@@ -89,19 +94,17 @@ class QueryResult(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_NAME}
+    return {"status": "ok", "model": MODEL_NAME, "dim": VECTOR_DIM}
 
 
 @app.post("/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest):
-    """Return raw embedding vector for a piece of text."""
     vec = model.encode(req.text).tolist()
     return EmbedResponse(embedding=vec, dim=len(vec))
 
 
 @app.post("/index")
 def index_document(req: IndexRequest):
-    """Embed a text chunk and store it in Qdrant."""
     vec = model.encode(req.text).tolist()
     qdrant.upsert(
         collection_name=COLLECTION_NAME,
@@ -117,7 +120,6 @@ def index_document(req: IndexRequest):
 
 @app.post("/query", response_model=list[QueryResult])
 def query(req: QueryRequest):
-    """Find the top-N most similar chunks to a query."""
     vec = model.encode(req.text).tolist()
     results = qdrant.search(
         collection_name=COLLECTION_NAME,

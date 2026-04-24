@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
 
-  # ── Infrastructure (Person B owns this file) ──────────────────────────────
+  # ── Infrastructure ────────────────────────────────────────────────────────────
 
   kafka:
     image: apache/kafka:3.7.0
@@ -28,9 +28,9 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant
     ports:
-      - "8000:6333"
+      - "6333:6333"
     volumes:
-      - chroma_data:/qdrant/storage
+      - qdrant_data:/qdrant/storage
     healthcheck:
       test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6333"]
       interval: 10s
@@ -48,12 +48,16 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Python Services (Person A) ─────────────────────────────────────────────
+  # ── Python Services (Person A / Kunal) ────────────────────────────────────────
 
   embedding:
     build: ./services/embedding
     container_name: embedding
     env_file: .env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      EMBEDDING_MODEL: microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract
     ports:
       - "8001:8001"
     depends_on:
@@ -69,6 +73,10 @@ services:
     build: ./services/rag
     container_name: rag
     env_file: .env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      RERANKER_URL: http://reranker:8003
     ports:
       - "8002:8002"
     depends_on:
@@ -76,27 +84,38 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      reranker:
+        condition: service_started
 
-  reward_model:
-    build: ./services/reward_model
-    container_name: reward_model
+  reranker:
+    build: ./services/reranker
+    container_name: reranker
     env_file: .env
     ports:
       - "8003:8003"
     depends_on:
       qdrant:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
   agents:
     build: ./services/agents
     container_name: agents
     env_file: .env
+    environment:
+      RERANKER_URL: http://reranker:8003
+      RETRIEVAL_CONFIDENCE_THRESHOLD: "0.60"
+      MIN_CONFIDENT_PASSAGES: "2"
     ports:
       - "8004:8004"
     depends_on:
       rag:
         condition: service_started
-      reward_model:
+      reranker:
         condition: service_started
 
   # ── Kafka Consumer (Person C) ──────────────────────────────────────────────
@@ -105,6 +124,9 @@ services:
     build: ./services/kafka_consumer
     container_name: kafka_consumer
     env_file: .env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
     depends_on:
       kafka:
         condition: service_healthy
@@ -132,7 +154,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Streamlit Frontend (Person D) ─────────────────────────────────────────
+  # ── Streamlit Frontend (Person D / Jaya) ──────────────────────────────────
 
   frontend:
     build: ./services/frontend
@@ -145,4 +167,4 @@ services:
         condition: service_healthy
 
 volumes:
-  chroma_data:
+  qdrant_data:

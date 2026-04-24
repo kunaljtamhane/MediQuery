@@ -1,4 +1,4 @@
-# System Architecture
+# MediQuery — System Architecture
 
 ## Full System Diagram
 
@@ -6,15 +6,16 @@
 flowchart TD
     User(["👤 User"])
 
-    %% ─── Frontend ────────────────────────────────────────────────────────────
-    subgraph PersonD_UI ["🖥️  Person D — Frontend"]
+    %% ─── Frontend (Jaya) ────────────────────────────────────────────────────
+    subgraph PersonD_UI ["🖥️  Jaya — Streamlit Frontend"]
         Streamlit["Streamlit UI · :8501
         ───────────────────
-        • Search bar
-        • Streaming answer
-        • Source attribution panel
-        • NEW / seen dedup indicator
-        • Multi-turn session history"]
+        • PDF upload
+        • Natural language query
+        • Streaming answer + citations
+        • Document comparison view
+        • Knowledge graph visualization
+        • Source provenance tags (Uploaded / PubMed / arXiv / medRxiv / Web)"]
     end
 
     %% ─── API Gateway ─────────────────────────────────────────────────────────
@@ -33,87 +34,133 @@ flowchart TD
         ───────────────────
         read → chunk → embed → index"]
 
-        SpringBoot -->|"publish JSON message"| Kafka
+        SpringBoot -->|"publish JSON"| Kafka
         Kafka -->|"consume"| KConsumer
     end
 
-    %% ─── Agent Orchestration ─────────────────────────────────────────────────
-    subgraph PersonAD_Agents ["🤖  Person A + D — LangGraph Agent Pipeline"]
+    %% ─── Agent Orchestration (Kunal) ─────────────────────────────────────────
+    subgraph PersonAD_Agents ["🤖  Kunal — LangGraph Multi-Agent Pipeline"]
         Supervisor["Supervisor Agent
         ───────────────────
-        GPT-4o-mini
-        Classifies query intent
-        Routes to specialist"]
+        GPT-4o-mini routing
+        Classifies intent → 3 routes
+        Guardrail: ≥2 passages > 0.60
+        MMR merge of agent outputs"]
 
         RAGAgent["📚 RAG Agent
-        Retrieval + Rerank
-        + Generate"]
+        QdrantDB retrieval (MMR)
+        BM25 hybrid + RRF
+        Cross-encoder rerank"]
 
-        ResearchAgent["🔍 Research Agent
-        Live arXiv API lookup
-        for out-of-corpus queries"]
+        MedPapersAgent["🔬 Medical Papers Agent
+        PubMed + arXiv + medRxiv
+        Concurrent async calls
+        Cross-encoder rerank"]
 
-        Supervisor -->|"route: rag_agent"| RAGAgent
-        Supervisor -->|"route: research_agent"| ResearchAgent
+        WebSearchAgent["🌐 Web Search Agent
+        DuckDuckGo retrieval
+        General context lookup"]
+
+        FinalizeNode["⚖️ Finalize Node
+        Confidence guardrail
+        MMR source merge
+        KG context prepend"]
+
+        Supervisor -->|"rag_agent"| RAGAgent
+        Supervisor -->|"medical_papers_agent"| MedPapersAgent
+        Supervisor -->|"web_search_agent"| WebSearchAgent
+        RAGAgent --> FinalizeNode
+        MedPapersAgent --> FinalizeNode
+        WebSearchAgent --> FinalizeNode
     end
 
     %% ─── RAG + ML Pipeline ───────────────────────────────────────────────────
-    subgraph PersonA_RAG ["🧠  Person A — RAG + ML Pipeline"]
+    subgraph PersonA_RAG ["🧠  Person A — RAG Pipeline"]
         direction LR
         Dense["Dense Search
-        ChromaDB
-        vector similarity"]
+        QdrantDB
+        BioMedBERT 768-dim
+        cosine similarity"]
 
         BM25["BM25 Search
-        keyword matching
+        in-memory keyword
         rank-bm25"]
 
         RRF["⚖️ RRF Merge
-        Reciprocal
-        Rank Fusion
+        Reciprocal Rank Fusion
         k = 60"]
 
-        RewardModel["🏆 Reward Model
+        MMR["🎯 MMR Reranking
+        Maximal Marginal
+        Relevance
+        λ = 0.5"]
+
+        Reranker["🏆 Cross-Encoder Reranker
         ms-marco-MiniLM
-        cross-encoder
-        NDCG@5 reranking"]
+        fine-tuned on MedAESQA
+        NDCG@5 reranking · :8003"]
 
         Dedup["🔄 Dedup Filter
         Redis cosine cache
-        blocks sim > 0.85
-        per session"]
+        per session · TTL 1hr"]
 
         LLM["✨ LLM Generation
-        OpenAI / AWS Bedrock
-        streaming tokens
-        with citations"]
+        Provider: openai | bedrock | local
+        local = LLaMA-3 8B + LoRA adapter
+        streaming tokens + citations"]
 
         Dense --> RRF
         BM25  --> RRF
-        RRF   --> RewardModel
-        RewardModel --> Dedup
+        RRF   --> MMR
+        MMR   --> Reranker
+        Reranker --> Dedup
         Dedup --> LLM
+    end
+
+    %% ─── Knowledge Graph (Jaya) ──────────────────────────────────────────────
+    subgraph PersonD_KG ["🕸️  Jaya — Knowledge Graph"]
+        KG["NetworkX + SciSpaCy
+        ───────────────────
+        Entity extraction (en_core_sci_lg)
+        Disease · Drug · Gene · Cell · Organism
+        Co-occurrence graph
+        Low-confidence guard (≤1 edge = excluded)
+        Query-time neighbor context"]
     end
 
     %% ─── Embedding Service ───────────────────────────────────────────────────
     subgraph PersonA_Emb ["🔢  Person A — Embedding Service"]
         EmbSvc["Embedding Service · :8001
         ───────────────────
-        POST /embed  → 384-dim vector
-        POST /index  → store in ChromaDB
+        POST /embed  → 768-dim BioMedBERT vector
+        POST /index  → store in QdrantDB
         POST /query  → top-N similar chunks
-        Model: all-MiniLM-L6-v2"]
+        Model: BioMedBERT (frozen encoder)"]
+    end
+
+    %% ─── Fine-Tuning Pipeline ────────────────────────────────────────────────
+    subgraph PersonA_FT ["🎓  Kunal — Fine-Tuning Pipeline (offline)"]
+        FT["Stage 1: LLaMA-3 8B (decoder)
+              BioMedBERT (frozen encoder)
+        Stage 2: Domain pre-training
+              PubMed + arXiv + medRxiv corpus
+        Stage 3: LoRA SFT on 28,136 MedAESQA triples
+              r=16 · alpha=32 · attention matrices only
+              early stopping on 15% held-out split
+        Stage 4: Evaluate F1 · ROUGE-L · NDCG@5
+              LLM-as-a-Judge hallucination check
+              vs. GPT-4 / Claude zero-shot baseline"]
     end
 
     %% ─── Storage ─────────────────────────────────────────────────────────────
-    subgraph PersonB_Store ["🗄️  Person B — Storage (Docker / AWS)"]
-        ChromaDB[("ChromaDB · :8000
+    subgraph PersonB_Store ["🗄️  Person B — Storage"]
+        QdrantDB[("QdrantDB · :6333
         Vector store
-        cosine similarity index")]
+        768-dim cosine index
+        BioMedBERT embeddings")]
 
         Redis[("Redis · :6379
         Session dedup cache
-        embedding history
         TTL: 1 hour")]
     end
 
@@ -121,83 +168,90 @@ flowchart TD
     subgraph PersonB_Infra ["⚙️  Person B — Infrastructure"]
         direction LR
         DC["Docker Compose
-        Local dev stack
-        Weeks 1–8"]
+        Local dev stack"]
 
         TF["Terraform
         AWS: VPC · EKS · MSK
-        S3 · ECR
-        Weeks 9–10"]
+        S3 · ECR (stretch goal)"]
 
         K8s["Kubernetes
         Deployment manifests
-        ConfigMap · Services
-        Liveness probes"]
+        ConfigMap · Services"]
     end
 
-    %% ─── Data Collection ─────────────────────────────────────────────────────
-    subgraph PersonD_Data ["📄  Person D — Data Collection & Annotation"]
-        Scraper["arXiv Scraper
-        3,000 papers
-        cs.CL · cs.AI · cs.LG
-        JSONL output"]
+    %% ─── Data Collection (Jaya) ──────────────────────────────────────────────
+    subgraph PersonD_Data ["📄  Jaya — Data Collection & Annotation"]
+        Scraper["arXiv / PubMed / medRxiv Scrapers
+        Corpus for fine-tuning"]
 
-        PDFExtract["PDF Extractor
-        500 full texts
-        PyMuPDF"]
+        PDFExtract["Docling PDF Extractor
+        512-token chunks · 64 overlap
+        User-uploaded PDFs"]
 
-        AnnotTool["Annotation Tool
-        300+ labeled triples
-        relevance 0–3
-        → reward model training"]
+        AnnotTool["MedAESQA Annotation
+        28,136 triples
+        3-tier negative sampling
+        → LoRA fine-tuning signal"]
     end
 
-    ArxivAPI(["🌐 arXiv API
-    external"])
+    ExternalAPIs(["🌐 External APIs
+    PubMed · arXiv · medRxiv
+    DuckDuckGo"])
 
-    %% ════════════════════════════════════════════════════════════════════════
-    %% QUERY FLOW  (user asks a question)
-    %% ════════════════════════════════════════════════════════════════════════
-    User          -->|"1 · search query"| Streamlit
-    Streamlit     -->|"2 · POST /search"| SpringBoot
-    SpringBoot    -->|"3 · POST /query"| Supervisor
-    RAGAgent      -->|"4a · dense"| Dense
-    RAGAgent      -->|"4b · sparse"| BM25
-    Dense         -->|"5 · POST /query"| EmbSvc
-    EmbSvc        -->|"6 · cosine search"| ChromaDB
-    BM25          -->|"6 · keyword scan"| ChromaDB
-    Dedup         -->|"7 · check cache"| Redis
-    LLM           -->|"8 · stream tokens"| SpringBoot
-    SpringBoot    -->|"9 · SSE stream"| Streamlit
+    %% ═══ QUERY FLOW ══════════════════════════════════════════════════════════
+    User          -->|"query / PDF upload"| Streamlit
+    Streamlit     -->|"POST /search"| SpringBoot
+    SpringBoot    -->|"POST /query"| Supervisor
+    RAGAgent      -->|"dense search"| Dense
+    RAGAgent      -->|"keyword search"| BM25
+    Dense         -->|"POST /query"| EmbSvc
+    EmbSvc        -->|"cosine search"| QdrantDB
+    Reranker      -->|"check cache"| Redis
+    FinalizeNode  -->|"KG context"| KG
+    LLM           -->|"stream tokens"| SpringBoot
+    SpringBoot    -->|"SSE stream"| Streamlit
 
-    %% ════════════════════════════════════════════════════════════════════════
-    %% INGESTION FLOW  (document enters the system)
-    %% ════════════════════════════════════════════════════════════════════════
+    %% ═══ INGESTION FLOW ══════════════════════════════════════════════════════
     KConsumer     -->|"POST /index chunk"| EmbSvc
-    EmbSvc        -->|"upsert vectors"| ChromaDB
+    EmbSvc        -->|"upsert vectors"| QdrantDB
+    KConsumer     -->|"index_document"| KG
 
-    %% ════════════════════════════════════════════════════════════════════════
-    %% DATA COLLECTION FLOW
-    %% ════════════════════════════════════════════════════════════════════════
-    Scraper       <-->|"API calls\n3-sec rate limit"| ArxivAPI
-    PDFExtract    -->|"bulk POST /ingest"| SpringBoot
-    ResearchAgent <-->|"live search"| ArxivAPI
-    AnnotTool     -->|"triples.jsonl"| RewardModel
+    %% ═══ LIVE RETRIEVAL ══════════════════════════════════════════════════════
+    MedPapersAgent <-->|"async API calls"| ExternalAPIs
+    WebSearchAgent <-->|"DuckDuckGo"| ExternalAPIs
 
-    %% ════════════════════════════════════════════════════════════════════════
-    %% STYLES
-    %% ════════════════════════════════════════════════════════════════════════
+    %% ═══ DATA PIPELINE ═══════════════════════════════════════════════════════
+    Scraper       <-->|"API calls"| ExternalAPIs
+    PDFExtract    -->|"POST /ingest"| SpringBoot
+    AnnotTool     -->|"triples.jsonl"| FT
+
+    %% ═══ STYLES ══════════════════════════════════════════════════════════════
     classDef personA fill:#dbeafe,stroke:#3b82f6,color:#1e3a8a,rx:8
     classDef personB fill:#dcfce7,stroke:#16a34a,color:#14532d,rx:8
     classDef personC fill:#fef9c3,stroke:#ca8a04,color:#713f12,rx:8
     classDef personD fill:#fce7f3,stroke:#db2777,color:#831843,rx:8
     classDef external fill:#fff7ed,stroke:#ea580c,color:#7c2d12,rx:8
 
-    class Dense,BM25,RRF,RewardModel,Dedup,LLM,RAGAgent,ResearchAgent,Supervisor,EmbSvc personA
-    class ChromaDB,Redis,DC,TF,K8s personB
+    class Dense,BM25,RRF,MMR,Reranker,Dedup,LLM,RAGAgent,Supervisor,EmbSvc,FT,FinalizeNode personA
+    class QdrantDB,Redis,DC,TF,K8s personB
     class SpringBoot,Kafka,KConsumer personC
-    class Streamlit,Scraper,PDFExtract,AnnotTool personD
-    class ArxivAPI external
+    class Streamlit,Scraper,PDFExtract,AnnotTool,MedPapersAgent,WebSearchAgent,KG personD
+    class ExternalAPIs external
+```
+
+---
+
+## Fine-Tuning Pipeline — Four Stages
+
+```mermaid
+flowchart LR
+    S1["Stage 1\nModel Selection\n───────────────\nDecoder: LLaMA-3 8B\nEncoder: BioMedBERT (frozen)\nFallbacks: BioMedLM · Meditron-7B"]
+    S2["Stage 2\nDomain Pre-training\n───────────────\nPubMed + arXiv + medRxiv\nOpen Access abstracts\nDomain vocabulary + summarization"]
+    S3["Stage 3\nLoRA SFT\n───────────────\n28,136 MedAESQA triples\n3-tier negatives\nr=16 · alpha=32\n3 epochs · early stop\n15% held-out validation"]
+    S4["Stage 4\nEvaluation\n───────────────\nF1 · ROUGE-L · EM\nNDCG@5 · MRR\nLLM-as-a-Judge\nvs. GPT-4 zero-shot baseline"]
+
+    S1 --> S2 --> S3 --> S4
+    S4 -->|"below threshold\niterate"| S3
 ```
 
 ---
@@ -207,114 +261,77 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     actor User
-    participant ST  as Streamlit<br/>:8501
-    participant SB  as Spring Boot<br/>:8080
-    participant SUP as Supervisor<br/>Agent
+    participant ST  as Streamlit :8501
+    participant SB  as Spring Boot :8080
+    participant SUP as Supervisor Agent
     participant RA  as RAG Agent
-    participant EMB as Embedding<br/>Service :8001
-    participant DB  as ChromaDB
-    participant RM  as Reward Model<br/>:8003
-    participant RD  as Redis
-    participant LLM as LLM<br/>OpenAI/Bedrock
+    participant EMB as Embedding Service :8001
+    participant DB  as QdrantDB :6333
+    participant RE  as Reranker :8003
+    participant KG  as Knowledge Graph
+    participant FIN as Finalize Node
+    participant LLM as LLaMA-3 (local) or OpenAI
 
-    User->>ST: types search query
+    User->>ST: natural language query
     ST->>SB: POST /search {query, sessionId}
     SB->>SUP: POST /query
-    SUP->>SUP: classify intent<br/>(GPT-4o-mini)
+    SUP->>SUP: classify intent (GPT-4o-mini)
     SUP->>RA: route → rag_agent
 
-    par Dense Search
+    par Dense Search (BioMedBERT)
         RA->>EMB: POST /query {text, n=15}
-        EMB->>DB: cosine similarity search
-        DB-->>EMB: top-15 vectors
-        EMB-->>RA: ranked passages
+        EMB->>DB: cosine search (768-dim)
+        DB-->>EMB: top-15 passages
+        EMB-->>RA: scored passages
     and BM25 Search
-        RA->>DB: keyword scan
-        DB-->>RA: BM25 ranked passages
+        RA->>DB: scroll all docs for BM25
+        DB-->>RA: corpus
     end
 
-    RA->>RA: RRF merge<br/>(dense + BM25)
-    RA->>RM: POST /rerank {query, candidates}
-    RM-->>RA: relevance scores
-    RA->>RA: sort by rerank score<br/>→ top 5 passages
-    RA->>RD: check dedup cache<br/>(cosine sim > 0.85?)
-    RD-->>RA: duplicates flagged
-    RA->>LLM: generate answer<br/>with context + citations
+    RA->>RA: RRF merge → MMR rerank
+    RA->>RE: POST /rerank {query, candidates}
+    RE-->>RA: cross-encoder scores
+    RA->>FIN: passages + scores
+
+    FIN->>FIN: guardrail check (≥2 passages > 0.60)
+    FIN->>KG: get_query_context(query)
+    KG-->>FIN: entity neighbor context
+    FIN->>LLM: prompt = KG context + passages + query
     LLM-->>SB: stream tokens (SSE)
     SB-->>ST: forward SSE stream
-    ST-->>User: render answer + sources live
+    ST-->>User: answer + citations + source provenance
 ```
 
 ---
 
-## Ingestion Flow — Step by Step
-
-```mermaid
-sequenceDiagram
-    actor PersonD as Person D
-    participant SC  as arXiv Scraper
-    participant PDF as PDF Extractor
-    participant SB  as Spring Boot<br/>:8080
-    participant KF  as Kafka<br/>documents topic
-    participant KC  as Python Consumer
-    participant EMB as Embedding<br/>Service :8001
-    participant DB  as ChromaDB
-
-    PersonD->>SC: python arxiv_scraper.py
-    SC->>SC: fetch 3,000 papers<br/>(cs.CL, cs.AI, cs.LG)
-    SC->>PDF: papers.jsonl
-    PDF->>PDF: download 500 PDFs<br/>extract full text (PyMuPDF)
-    PDF->>SB: POST /ingest per paper
-
-    loop for each document
-        SB->>KF: publish JSON message<br/>{doc_id, title, text, ...}
-        KF->>KC: consume message
-        KC->>KC: chunk text<br/>512 words, 64 overlap
-        loop for each chunk
-            KC->>EMB: POST /index<br/>{chunk_id, text, metadata}
-            EMB->>EMB: encode → 384-dim vector
-            EMB->>DB: upsert(chunk_id, vector, text)
-        end
-    end
-
-    Note over DB: 3,000 papers × ~8 chunks avg<br/>≈ 24,000 vectors indexed
-```
-
----
-
-## AWS Deployment Architecture (Weeks 9–10)
+## AWS Deployment Architecture (Stretch Goal — Weeks 10-11)
 
 ```mermaid
 flowchart TD
     Internet(["🌐 Internet"])
 
     subgraph AWS ["AWS · us-east-1  (Person B — Terraform)"]
-
         subgraph VPC ["VPC  10.0.0.0/16"]
-
             subgraph Public ["Public Subnets"]
                 IGW["Internet Gateway"]
                 LB["LoadBalancer\nfrontend + API"]
             end
-
             subgraph Private ["Private Subnets"]
-
                 subgraph EKS ["EKS Cluster  (2× t3.small)"]
-                    PodEmb["Pod: embedding"]
+                    PodEmb["Pod: embedding\n(BioMedBERT)"]
                     PodRAG["Pod: rag"]
-                    PodRM["Pod: reward_model"]
+                    PodRE["Pod: reranker\n(cross-encoder)"]
                     PodAgents["Pod: agents"]
                     PodConsumer["Pod: kafka_consumer"]
                     PodSB["Pod: spring_boot_api"]
                     PodFE["Pod: frontend"]
                 end
-
-                MSK[["MSK Kafka\nkafka.t3.small\n~$0.082/hr"]]
+                MSK[["MSK Kafka\nkafka.t3.small"]]
+                Qdrant[("QdrantDB\n768-dim vectors")]
             end
         end
-
-        ECR[("ECR\nDocker image\nregistry")]
-        S3[("S3\nmodel artifacts\nterraform state")]
+        ECR[("ECR\nDocker images")]
+        S3[("S3\nLoRA adapter weights\nterraform state")]
         CW["CloudWatch\nlogs + metrics"]
     end
 
@@ -327,7 +344,8 @@ flowchart TD
     PodSB --> PodAgents
     PodAgents --> PodRAG
     PodRAG --> PodEmb
-    PodRAG --> PodRM
+    PodRAG --> PodRE
+    PodEmb --> Qdrant
     EKS --> ECR
     EKS --> S3
     EKS --> CW
@@ -341,35 +359,35 @@ flowchart TD
 
 ---
 
-## Component Ownership at a Glance
+## Component Ownership
 
 ```mermaid
 flowchart LR
-    subgraph A ["🔵 Person A — ML & RAG Lead"]
-        A1["Embedding Service\nservices/embedding/"]
-        A2["RAG Pipeline\nservices/rag/"]
-        A3["Reward Model\nservices/reward_model/"]
-        A4["Agent Graph\nservices/agents/graph.py\nsupervisor.py · rag_agent.py"]
+    subgraph K ["🔵 Kunal — ML, RAG & Orchestration"]
+        K1["Supervisor Agent\nservices/agents/supervisor.py"]
+        K2["Fine-Tuning Pipeline\nservices/fine_tuning/train.py"]
+        K3["RAG Agent + Pipeline\nservices/rag/ · services/agents/rag_agent.py"]
+        K4["Medical Papers Agent\nservices/agents/research_agent.py"]
+        K5["Evaluation Framework\nF1 · ROUGE-L · NDCG@5 · LLM-as-a-Judge"]
+        K6["Embedding Service\nservices/embedding/ (BioMedBERT)"]
     end
 
-    subgraph B ["🟢 Person B — Infrastructure Lead"]
+    subgraph B ["🟢 Person B — Infrastructure"]
         B1["Docker Compose\ndocker-compose.yml"]
         B2["Terraform\ninfra/terraform/"]
         B3["Kubernetes\ninfra/kubernetes/"]
-        B4["Makefile + CI\n.github/workflows/"]
     end
 
-    subgraph C ["🟡 Person C — Backend & Integration"]
+    subgraph C ["🟡 Person C — Backend"]
         C1["Spring Boot API\nservices/spring_boot_api/"]
         C2["Kafka Consumer\nservices/kafka_consumer/"]
-        C3["Dedup Engine\nservices/rag/dedup.py"]
-        C4["Research Agent\nservices/agents/research_agent.py"]
     end
 
-    subgraph D ["🩷 Person D — Data & Frontend"]
-        D1["arXiv Scraper\ndata/collection/"]
-        D2["Annotation Tool\ndata/annotation/"]
-        D3["Streamlit UI\nservices/frontend/"]
-        D4["Paper Writing\nabstract · intro · conclusion"]
+    subgraph J ["🩷 Jaya — Data, KG & Frontend"]
+        J1["Data Collection\ndata/collection/"]
+        J2["MedAESQA Annotation\ndata/annotation/"]
+        J3["Web Search Agent\nservices/agents/web_search_agent.py"]
+        J4["Knowledge Graph\nservices/agents/knowledge_graph.py"]
+        J5["Streamlit UI\nservices/frontend/"]
     end
 ```
