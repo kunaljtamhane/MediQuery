@@ -1,0 +1,22 @@
+# Data & Indexing
+datasets
+qdrant-client
+
+# LLM & Fine-Tuning
+transformers
+peft
+accelerate
+
+# Core Machine Learning
+torch
+torchvision
+torchaudio
+
+# Agent Orchestration
+langchain
+langgraph
+
+# Utilities
+numpy
+pandas
+python-dotenv
