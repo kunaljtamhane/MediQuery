@@ -1,8 +1,15 @@
-import json
-import PyPDF2
-import sys
 import os
+from dotenv import load_dotenv
+
+# CRITICAL: Load environment variables BEFORE any other imports
+load_dotenv()
+
+import json
+import sys
 import re
+import PyPDF2
+
+# Add agents folder to system path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'agents'))
 
 import streamlit as st
@@ -38,19 +45,13 @@ def extract_graph_entities(text_chunk, user_query):
     {text_chunk}
     """
     try:
-        # --- DEBUG LOGGING ---
         print(f"\n[Knowledge Graph] Sending {len(text_chunk)} characters to local LLM for extraction...")
         
         # We use the supervisor's LLM to do the heavy lifting
         response = st.session_state.supervisor.expert_llm.invoke(prompt)
-        
-        # --- DEBUG LOGGING ---
         print("[Knowledge Graph] LLM successfully generated a response!")
         
         content = response.content
-        
-        # ROBUST JSON PARSER: Find everything between the first { and last }
-        # This ignores any conversational garbage the LLM spits out before or after the JSON.
         match = re.search(r'\{.*\}', content, re.DOTALL)
         
         if match:
@@ -68,6 +69,7 @@ def extract_graph_entities(text_chunk, user_query):
     except Exception as e:
         print(f"\n[Knowledge Graph Error] Extraction Pipeline Failed: {e}")
         return None
+
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="MediQuery UI")
@@ -96,26 +98,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 # --- INITIALIZE SESSION STATE ---
 if "supervisor" not in st.session_state:
     st.session_state.supervisor = SupervisorAgent()
 if "messages" not in st.session_state:
     st.session_state.messages = []
-# State to hold the evidence from the most recent query
 if "current_evidence" not in st.session_state:
     st.session_state.current_evidence = {"rag": [], "pubmed": [], "web": []}
-# State to hold dynamic graph data
+
+# FIX: Initialize the dynamic graph as an empty structure so we can append to it
 if "dynamic_graph" not in st.session_state:
-    st.session_state.dynamic_graph = None
+    st.session_state.dynamic_graph = {"nodes": [], "edges": []}
+
 
 # --- SIDEBAR: Navigation & Uploads ---
 with st.sidebar:
-    # Use the exact filename you saved the image as
-    st.image("mediquery_logo.png", use_container_width=True)
+    st.image("mediquery_logo.png", width="stretch")
     st.divider()
     
     st.write("**NAVIGATION**")
-    nav = st.radio("", ["Literature search", "Compare papers", "Summarise corpus", "Knowledge graph"])
+    nav = st.radio("Navigation Menu", ["Literature search", "Compare papers", "Summarise corpus", "Knowledge graph"], label_visibility="collapsed")
     st.divider()
     
     st.write("**MY PAPERS**")
@@ -132,7 +135,6 @@ with st.sidebar:
                     
                     chunks = [full_text[i:i+1000] for i in range(0, len(full_text), 1000)]
                     
-                    # 1. Standard Vector Ingestion
                     if hasattr(st.session_state.supervisor.rag_worker, 'ingest_chunks'):
                         st.session_state.supervisor.rag_worker.ingest_chunks(chunks, source=uploaded_file.name)
                         st.success(f"Successfully added {len(chunks)} chunks to Qdrant!")
@@ -143,6 +145,7 @@ with st.sidebar:
                     st.error(f"Error processing PDF: {e}")
         else:
             st.error("Please upload a PDF first.")
+
 
 # --- MAIN LAYOUT: Central Chat & Right Citation Panel ---
 col1, col2 = st.columns([3, 1])
@@ -155,25 +158,20 @@ with col1:
     # ROUTE 1: LITERATURE SEARCH (The Chat)
     # -----------------------------------------
     if nav == "Literature search":
-        # Render chat history
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        # Handle new user input
         if prompt := st.chat_input("Ask about findings, gaps, methods, or request a summary..."):
-            # Append user message
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # Generate and display assistant response
             with st.chat_message("assistant"):
                 with st.spinner("Agents are researching..."):
                     result = st.session_state.supervisor.execute(prompt)
                     response = result["final_answer"]
                     
-                    # Save the new evidence to session state so the right panel can read it
                     st.session_state.current_evidence = {
                         "rag": result.get("rag_evidence", []),
                         "pubmed": result.get("pubmed_evidence", []),
@@ -182,27 +180,44 @@ with col1:
                     
                     st.markdown(response)
                     
-            # --- NEW KNOWLEDGE GRAPH TRIGGER ---
-            # Now that we have retrieved the exact RAG evidence for this prompt, generate the graph.
+            # --- UPDATED KNOWLEDGE GRAPH TRIGGER (MERGING LOGIC) ---
             with st.spinner("Mapping entities for the Knowledge Graph..."):
                 rag_matches = result.get("rag_evidence", [])
                 if rag_matches:
-                    # --- VRAM SAFETY FIX: Grab only top 2 matches ---
                     top_matches = rag_matches[:2]
                     compiled_rag_context = "\n\n".join([match.get('context', '') for match in top_matches])
                     
-                    # Pass the compiled context AND the user's prompt to the LLM
                     graph_data = extract_graph_entities(compiled_rag_context, prompt)
                     
                     if graph_data:
-                        st.session_state.dynamic_graph = graph_data
-                        st.toast("Knowledge Graph Updated!", icon="🧠")
-                else:
-                    # If RAG found nothing, clear the graph state to prevent old data from lingering
-                    st.session_state.dynamic_graph = None
+                        # Merge Nodes to avoid duplicates
+                        existing_node_ids = set()
+                        for n in st.session_state.dynamic_graph["nodes"]:
+                            existing_node_ids.add(n.get("id") if isinstance(n, dict) else n)
+                            
+                        for new_node in graph_data.get("nodes", []):
+                            node_id = new_node.get("id") if isinstance(new_node, dict) else new_node
+                            if node_id not in existing_node_ids:
+                                st.session_state.dynamic_graph["nodes"].append(new_node)
+                                existing_node_ids.add(node_id)
+
+                        # Merge Edges to avoid duplicates
+                        existing_edges = set()
+                        for e in st.session_state.dynamic_graph["edges"]:
+                            if isinstance(e, dict):
+                                existing_edges.add((e.get("source"), e.get("target")))
+
+                        for new_edge in graph_data.get("edges", []):
+                            if isinstance(new_edge, dict):
+                                edge_tuple = (new_edge.get("source"), new_edge.get("target"))
+                                if edge_tuple not in existing_edges:
+                                    st.session_state.dynamic_graph["edges"].append(new_edge)
+                                    existing_edges.add(edge_tuple)
+
+                        st.toast("Knowledge Graph Expanded!", icon="🧠")
 
             st.session_state.messages.append({"role": "assistant", "content": response})
-            st.rerun() # Force UI to update the right panel immediately
+            st.rerun() 
 
     # -----------------------------------------
     # ROUTE 2: KNOWLEDGE GRAPH
@@ -210,47 +225,37 @@ with col1:
     elif nav == "Knowledge graph":
         st.write("Interactive entity mapping extracted dynamically from your active documents.")
         
-        # Check if we have dynamically extracted data
-        if not st.session_state.dynamic_graph:
+        # FIX: Check if nodes exist rather than checking if graph is None
+        if not st.session_state.dynamic_graph.get("nodes"):
             with st.container(border=True):
                 st.info("Ask a question in the Literature Search tab to map entities for the Knowledge Graph!")
         else:
-            # 1. Parse dynamic nodes (DEFENSIVE)
             nodes = []
-            node_ids = set() # NEW: Keep track of every valid node ID
+            node_ids = set() 
             
             for n in st.session_state.dynamic_graph.get("nodes", []):
-                # Check if the LLM followed instructions and gave us a dictionary
                 if isinstance(n, dict):
                     color = "#003DA5" if n.get("group") in ["Framework", "Algorithm"] else "#4CAF50" 
-                    # Use .get() safely, fallback to str(n) just in case 'id' is missing
                     node_id = str(n.get("id", "Unknown"))
                     node_label = str(n.get("label", node_id))
-                    
                     nodes.append(Node(id=node_id, label=node_label, size=20, color=color))
-                    node_ids.add(node_id) # Add to our registry
-                
-                # Fallback: If the LLM just gave us a list of raw strings
+                    node_ids.add(node_id) 
                 elif isinstance(n, str):
                     nodes.append(Node(id=n, label=n, size=20, color="#4CAF50"))
-                    node_ids.add(n) # Add to our registry
+                    node_ids.add(n) 
 
-            # 2. Parse dynamic edges (BULLETPROOF)
             edges = []
             for e in st.session_state.dynamic_graph.get("edges", []):
                 if isinstance(e, dict):
-                    # Forgive the LLM if it capitalizes keys unexpectedly
                     source = str(e.get("source") or e.get("Source"))
                     target = str(e.get("target") or e.get("Target"))
                     label = str(e.get("label") or e.get("Label", ""))
                     
-                    # NEW: Only draw the edge if BOTH the source and target actually exist!
                     if source in node_ids and target in node_ids:
                         edges.append(Edge(source=source, target=target, label=label))
                     else:
                         print(f"[Knowledge Graph Warning] Skipped invalid edge: {source} -> {target}")
             
-            # 3. Configure and Render
             if not nodes:
                  st.warning("The AI extracted data, but no valid nodes were found. Please try another query.")
             else:
@@ -258,43 +263,38 @@ with col1:
                     width="100%", height=500, directed=True, physics=True, hierarchical=False,
                     nodeHighlightBehavior=True, highlightColor="#F7A7A6"
                 )
-                
                 with st.container(border=True):
                     agraph(nodes=nodes, edges=edges, config=config)
 
-    # -----------------------------------------
-    # ROUTE 3 & 4: OTHER TABS (Placeholders)
-    # -----------------------------------------
     elif nav == "Compare papers":
         st.write("Paper comparison matrix will render here.")
     elif nav == "Summarise corpus":
         st.write("Global corpus summary will render here.")
 
+
 # --- RIGHT COLUMN: Dynamic Citation Panel ---
 with col2:
     st.subheader("Retrieved sources")
     
-    # Calculate total sources found
     total_sources = len(st.session_state.current_evidence["rag"]) + \
                     len(st.session_state.current_evidence["pubmed"]) + \
                     len(st.session_state.current_evidence["web"])
     
     st.write(f"**{total_sources} sources** compiled by agents")
     
-    # Create tabs mapping to your 3 evidence streams
     tab_rag, tab_pubmed, tab_web = st.tabs(["Local DB", "PubMed", "Web"])
     
     with tab_rag:
         if not st.session_state.current_evidence["rag"]:
             st.info("No local database matches found.")
         else:
-            for i, ev in enumerate(st.session_state.current_evidence["rag"]):
-                with st.container(border=True): # Creates the "Card" look
-                    st.markdown("**Internal Vector Match**")
-                    # Display a truncated snippet of the context
+            for ev in st.session_state.current_evidence["rag"]:
+                with st.container(border=True): 
+                    source_doc = ev.get('metadata', {}).get('source', 'Local PDF Document')
+                    st.markdown(f"📄 **[{source_doc}]**")
+                    
                     snippet = ev.get('context', '')[:150] + "..." 
                     st.write(snippet)
-                    # Simulated badge
                     st.caption("🟢 RAG Agent")
 
     with tab_pubmed:
@@ -303,7 +303,11 @@ with col2:
         else:
             for ev in st.session_state.current_evidence["pubmed"]:
                 with st.container(border=True):
-                    st.markdown(f"**PMID: {ev.get('pmid', 'N/A')}**")
+                    pmid = ev.get('pmid', 'N/A')
+                    pubmed_url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                    
+                    st.markdown(f"🔗 **[Read on PubMed: PMID {pmid}]({pubmed_url})**")
+                    
                     snippet = ev.get('content', '')[:150] + "..."
                     st.write(snippet)
                     st.caption("🔵 PubMed Agent")
@@ -312,9 +316,13 @@ with col2:
         if not st.session_state.current_evidence["web"]:
             st.info("No web definitions retrieved.")
         else:
-            for i, ev in enumerate(st.session_state.current_evidence["web"]):
+            for ev in st.session_state.current_evidence["web"]:
                 with st.container(border=True):
-                    st.markdown("**Web Snippet**")
+                    title = ev.get('title', 'Web Snippet')
+                    url = ev.get('url', '#')
+                    
+                    st.markdown(f"🔗 **[{title}]({url})**")
+                    
                     snippet = ev.get('content', '')[:150] + "..."
                     st.write(snippet)
                     st.caption("🟠 Web Scraper Agent")

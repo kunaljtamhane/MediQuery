@@ -1,0 +1,23 @@
+How does Pembrolizumab interact with the PD1 pathway and its ligands?
+
+[Sources Used: Local Document Database, PubMed Peer-Reviewed Literature, Web Search (Non-Peer-Reviewed)]
+
+Direct Answer Summary Pembrolizumab binds to the PD-1 receptor and blocks its interaction with PD-L1 and PD-L2, thereby restoring the immune response against tumor cells.
+
+Evidence-Aligned Explanation Pembrolizumab, a humanized monoclonal anti-PD1 antibody, functions by binding to the PD-1 receptor on T-cells, preventing its interaction with PD-L1 and PD-L2. This blockade removes the inhibitory signals that tumor cells use to evade the immune system, thus enhancing the anti-tumor T-cell response. This mechanism is crucial for the efficacy of pembrolizumab in various cancers, particularly those with higher mutational loads such as melanoma, NSCLC, and mismatch repair (MMR) deficient cancers.
+
+What is the relationship between CTLA4, CD28, CD80, and T-cell activation?
+
+[Sources Used: Local Document Database, PubMed Peer-Reviewed Literature, Web Search (Non-Peer-Reviewed)]
+
+Direct Answer Summary CTLA4 competes with CD28 for binding to CD80 and CD86, thereby inhibiting T-cell activation.
+
+Evidence-Aligned Explanation CTLA4 and CD28 share the same ligands, CD80 and CD86, which are expressed on antigen-presenting cells (APCs). CD28 is a co-stimulatory receptor that enhances T-cell activation when it binds to CD80 or CD86. In contrast, CTLA4 acts as an inhibitory receptor. It has a higher affinity for CD80 and CD86 than CD28. When CTLA4 binds to these ligands, it prevents CD28 from binding, thereby suppressing the co-stimulatory signal required for full T-cell activation. This competitive binding mechanism is crucial for regulating T-cell responses and maintaining immune tolerance.
+
+How does PDL1 expression on neoplastic cells contribute to tumor immune evasion?
+
+[Sources Used: Local Document Database, PubMed Peer-Reviewed Literature, Web Search (Non-Peer-Reviewed)]
+
+Direct Answer Summary PDL1 expression on neoplastic cells contributes to tumor immune evasion by inducing T-cell exhaustion and promoting the differentiation of T-cells into induced Tregs, which suppress cytotoxic T-cell function.
+
+Evidence-Aligned Explanation PDL1 can be induced on neoplastic cells in response to interferon gamma, leading to the engagement of PDL1 with PD1 on T-cells. This interaction induces T-cells to become induced Tregs, which then suppress cytotoxic T-cell function, thereby facilitating tumor immune evasion. Additionally, reverse signaling through PDL1 in tumor cells results in their resistance to death induced by cytotoxic T-lymphocytes (CTLs) and other mechanisms.

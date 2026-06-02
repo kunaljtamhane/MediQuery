@@ -1,18 +1,56 @@
+import os
 import requests
 import xml.etree.ElementTree as ET
+from dotenv import load_dotenv
+
+# CRITICAL: Load environment variables BEFORE importing or initializing LangChain/Bedrock
+load_dotenv()
+
+from langchain_aws import ChatBedrock
 
 class PubMedAgent:
     def __init__(self):
         # NCBI E-utilities base URL for querying PubMed
         self.base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+        
+        # Initialize the model using the credentials loaded above
+        self.llm = ChatBedrock(
+            model_id="amazon.nova-pro-v1:0",
+            region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        )
         print("[PubMed Agent] Initialized external scientific authority link.")
+
+    def translate_query(self, raw_query):
+        """
+        Uses the LLM to strip conversational words and generate a strict PubMed Boolean search.
+        """
+        system_prompt = (
+            "You are a medical research librarian. Convert the user's question into a strict, "
+            "concise Boolean search query for PubMed. Extract only the core medical terms, drugs, "
+            "and conditions. Use AND/OR. Do NOT include conversational filler like 'what is' or 'efficacy of'. "
+            "Do NOT include unrelated appended words like 'Mayo Clinic' or 'NIH'. "
+            "Return ONLY the raw search string, nothing else."
+        )
+        
+        try:
+            response = self.llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": raw_query}
+            ])
+            translated = response.content.strip()
+            print(f"[PubMed Agent] Translated '{raw_query}' -> '{translated}'")
+            return translated
+        except Exception as e:
+            print(f"[PubMed Agent] LLM Translation failed: {e}. Falling back to raw query.")
+            return raw_query
 
     def retrieve_literature(self, query, top_k=3):
         """
         Searches PubMed for the query and retrieves the latest peer-reviewed abstracts.
         """
-        # Step 1: Search for relevant PubMed IDs (PMIDs)
-        search_url = f"{self.base_url}esearch.fcgi?db=pubmed&term={query}&retmode=json&retmax={top_k}"
+        clean_query = self.translate_query(query)
+        
+        search_url = f"{self.base_url}esearch.fcgi?db=pubmed&term={clean_query}&retmode=json&retmax={top_k}"
         try:
             response = requests.get(search_url, timeout=10).json()
             id_list = response.get("esearchresult", {}).get("idlist", [])
@@ -21,9 +59,9 @@ class PubMedAgent:
             return []
 
         if not id_list:
+            print(f"[PubMed Agent] 0 PMIDs found for clean query: {clean_query}")
             return []
 
-        # Step 2: Fetch the full XML records for the retrieved PMIDs
         ids = ",".join(id_list)
         fetch_url = f"{self.base_url}efetch.fcgi?db=pubmed&id={ids}&retmode=xml"
         
@@ -36,12 +74,10 @@ class PubMedAgent:
 
         results = []
 
-        # Step 3: Parse the XML to extract the structured abstract
         for article in root.findall(".//PubmedArticle"):
             pmid = article.findtext(".//PMID")
             title = article.findtext(".//ArticleTitle")
             
-            # PubMed abstracts are often divided into structured sections
             abstract_texts = article.findall(".//AbstractText")
             abstract_sections = []
             for elem in abstract_texts:
@@ -64,11 +100,10 @@ class PubMedAgent:
 
         return results
 
-# Execution block for local testing
 if __name__ == "__main__":
     agent = PubMedAgent()
-    test_query = "efficacy of rapid prescreening glandular cell abnormalities"
-    print(f"\nQuerying live PubMed database for: '{test_query}'...\n")
+    test_query = "Can you tell me what the efficacy of Pembrolizumab is in treating non-small cell lung cancer? Mayo clinic"
+    print(f"\nProcessing query...\n")
     
     literature = agent.retrieve_literature(test_query, top_k=2)
     
