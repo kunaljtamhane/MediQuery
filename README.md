@@ -6,7 +6,7 @@ MediQuery is a domain-specific, multi-agent Retrieval-Augmented Generation (RAG)
 
 The system utilizes a multi-agent orchestration layer via LangGraph to manage the retrieval, reasoning, and synthesis workflow.
 
-![MediQuery Architecture](mediqueryAWS.drawio.jpg)
+![MediQuery Architecture](mediqueryAWS.drawio.png)
 
 ## Key Features
 
